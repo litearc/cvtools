@@ -19,13 +19,15 @@ import progressbar
 # bayesian matting -------------------------------------------------------------
 
 # load data
-# num = '01'
-# img = im.imread('matting/inp/GT'+num+'.png') # raw image
-# tm = im.imread('matting/tm/1/GT'+num+'.png') # trimap
-# gta = im.imread('matting/gt/GT'+num+'.png')  # ground-truth alpha
-img = im.imread('matting/test/img.png') # raw image
-tm = im.imread('matting/test/tm.png') # trimap
+num = '03'
+img = im.imread('matting/inp/GT'+num+'.png') # raw image
+tm = im.imread('matting/tm/1/GT'+num+'.png') # trimap
+gta = im.imread('matting/gt/GT'+num+'.png')  # ground-truth alpha
 colors = ('red','green','blue')
+
+# low-res test image
+# img = im.imread('matting/test/img.png') # raw image
+# tm = im.imread('matting/test/tm.png') # trimap
 
 class Bayesian_Matting(object):
   """
@@ -33,10 +35,10 @@ class Bayesian_Matting(object):
   values in the unknown tri-map pixels. it models the fg and bg, each, using a
   multivariate gaussian, and computes the fg, bg, and alpha values using an
   iterative approach until convergence. this is done over a shifting local
-  window to improve likelihood of separating of fg and bg.
+  window to improve likelihood of separating fg and bg.
 
   based on the method described in:
-  Y.-Y. Chuang, B. Curless, D. Salesin, and R. Szeliski. A Bayesian approach to
+  Y. Chuang, B. Curless, D. Salesin, and R. Szeliski. A Bayesian approach to
   digital matting. In IEEE Computer Society Conference on Computer Vision and
   Pattern Recognition (CVPR), 2001.
 
@@ -44,48 +46,76 @@ class Bayesian_Matting(object):
   Radke for reference.
   """
 
-  def __init__(self, img, tm, dvar, lws):
+  def __init__(self, img, tm, dvar, lws, overlap=1.0/3):
 
     # inputs ...................................................................
     # img               input image. [y x {rgb}]
-    # trimap            trimap. [y x {rgb}]
+    # tm                trimap. [y x {rgb}]
     # dvar              tunable parameter that reflects expected deviation from
     #                   matting assumption. (float)
     #                   log P(I|F,B,a) = -1/dvar * norm(I-(a*F+(1-a)*B)
     # lws               size of shifting local window is: lws x lws. (int)
+    # overlap           fraction overlap b/w adjacent windows. (float)
+    #                   (default = 1.0/3)
     
     self.img = img
     self.tm = tm
     self.dvar = dvar
+    self.lws = lws
+    self.overlap = overlap
+    self.dwin = int(self.lws*(1-overlap)) # num pixels for window to shift
     self.fg_mu, self.fg_icov = self.get_mu_icov(img[tm==1])
     self.bg_mu, self.bg_icov = self.get_mu_icov(img[tm==0])
-    self.a = self.calc_alpha()
+    self.a = self.main_driver()
 
   # ............................................................................
 
-  def calc_alpha(self):
-    
+  def main_driver(self):
+
     # the main driver which shifts a local window over image, and for each
-    # position computes the mean and covariance matrix for fg and bg (obtained
-    # from trimap), and iteratively computes the fg, bg, and alpha values in
-    # unknown trimap pixels within the current window.
+    # position, computes the alpha values for unknown pixels in the trimap. the
+    # window is shifted in discrete increments, with some overlap. for unknown
+    # pixels in overlap regions, the alpha estimates are averaged.
+
+    # we add the alpha values estimated from each window into one array, and
+    # track the number of values added so we can average at the end.
+    [ny,nx,_] = self.img.shape
+    navg = np.zeros((ny,nx,3))
+    a = np.zeros((ny,nx,3))
+
+    for iy in range(0,ny-1,self.dwin):
+      for ix in range(0,nx-1,self.dwin):
+        ii = np.s_[iy:iy+self.lws-1,ix:ix+self.lws-1,:]
+        a[ii] += self.calc_alpha(self.img[ii], self.tm[ii])
+        navg[ii] += 1
+
+    a /= navg
+    return a
+
+  # ............................................................................
+
+  def calc_alpha(self, img, tm):
+    
+    # this computes the mean and covariance matrix for fg and bg (obtained from
+    # trimap), and iteratively computes the fg, bg, and alpha values in unknown
+    # trimap pixels within the current window.
     #
     # outputs ..................................................................
     # tmc               calculated trimap. [y x {rgb}]
-    
+  
     # indicate progress with bar
-    unp = np.abs(self.tm[:,:,0]-.5)<.1 # unknown pixels
+    unp = np.abs(tm[:,:,0]-.5)<.1 # unknown pixels
     nun = np.count_nonzero(unp) # num unknown pixels
     pb = progressbar.ProgressBar(max_value=nun)
     ii = 0 # num unknown pixels processed so far
 
-    tmc = self.tm[:,:,0] # calculated trimap
+    tmc = tm[:,:,0] # calculated trimap
     [ny,nx,_] = img.shape
     for iy in range(ny):
       for ix in range(nx):
         if unp[iy,ix]: # is unknown pixel
           I = np.matrix(np.squeeze(img[iy,ix,:])).T
-          [F,B,a] = self.compute_FGa(I,.5)
+          [_,_,a] = self.compute_FGa(I,.5)
           tmc[iy,ix] = a
           # set progressbar
           pb.update(ii)
@@ -119,10 +149,10 @@ class Bayesian_Matting(object):
 
   # ............................................................................
 
-  def compute_FGa(self, I, a0, tol=.001, max_niter=20):
+  def compute_FGa(self, I, a0, tol=.001, max_niter=40):
     
     # computes the fg, bg, and alpha value for a given pixel value. this is an
-    # iterative maximum-likelihood procedure that goes until convergence.
+    # iterative maximum-likelihood procedure that repeats until convergence.
     #
     # inputs ...................................................................
     # I                 image pixel value. (3 x 1 matrix) [r;g;b]
@@ -171,7 +201,7 @@ class Bayesian_Matting(object):
 # ------------------------------------------------------------------------------
 
 bm = Bayesian_Matting(img, tm, .4, 100)
-
-# imageio.imwrite('/Users/hislam/Desktop/a.png', bm.a)
-# imageio.imwrite('/Users/hislam/Desktop/img.png', bm.a*bm.img)
+imageio.imwrite('/Users/hislam/Desktop/a.png', bm.a)
+imageio.imwrite('/Users/hislam/Desktop/img.png', bm.a*bm.img)
+imageio.imwrite('/Users/hislam/Desktop/gt.png', gta*bm.img)
 
