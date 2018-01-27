@@ -13,7 +13,10 @@ import pylab as pl
 import scipy.linalg as la
 import scipy.misc
 from scipy.sparse import lil_matrix
+from scipy.sparse import csc_matrix
 from scipy.sparse.linalg import lsqr
+from scipy.sparse.linalg import spsolve
+import skimage.color as color
 import skimage.transform as tform
 import sizeof
 
@@ -47,7 +50,7 @@ def calc_mu_icov(dat):
   dat = np.matrix(np.reshape(dat,(-1,3))).T # [{r,g,b} pts]
   n = dat.shape[1] # num pts
   mu = np.mean(dat,1) # mean, matrix [r,g,b].T
-  cov = dat*dat.T/n # 3x3 covariance matrix
+  cov = (dat-mu)*(dat-mu).T/n # 3x3 covariance matrix
   return mu, cov
 
 
@@ -253,6 +256,53 @@ class Bayesian_Matting(object):
 
 # closed-form matting ----------------------------------------------------------
 
+@jit
+def matting_laplacian(I, r, eps):
+
+  # gets the matting laplacian L, which is used in a minimization problem used
+  # to obtain the alpha values. this is based on eq 2.36 in the Radke book.
+  #
+  # inputs .....................................................................
+  # I                 image. [x y {r,g,b}]
+  # r                 "radius" of square window. (int)
+  # eps               regularization parameter. (float)
+  #
+  # outputs ....................................................................
+  # a                 alpha values. [x y {rgb}]
+  #
+  
+  [ny,nx,_] = I.shape
+  N = nx*ny # num pixels in image
+  W = (2*r+1)**2 # num pixels in window
+  eye = np.matrix(np.eye(3))
+  L = lil_matrix((N,N))
+
+  # slide window over each position in image
+  for wy in range(r,ny-r): # window y position
+    for wx in range(r,nx-r): # window x position
+
+      # part of window in image
+      Iw = I[wy-r:wy+r+1,wx-r:wx+r+1,:]
+
+      # calculate mean and regularized inv covariance matrix of pixels in window
+      mu, cov = calc_mu_icov(Iw)
+      icov = la.inv(cov+eps/W*eye)
+
+      # get linear indices (row-major) of all pixels in window
+      k = np.ravel(np.arange(wy-r,wy+r+1)[:,np.newaxis]*nx+
+          np.arange(wx-r,wx+r+r))[np.newaxis]
+
+      # construct a [W x 3] matrix containing rgb values of all pixels in window
+      Ik = np.matrix(np.reshape(Iw,(W,3))).T
+
+      # vector where each element contains the value to add to an entry in L
+      Lij = np.eye(W)-1.0/W*(Ik-mu).T*icov*(Ik-mu)
+
+      # add to matting laplacian
+      L[k.T,k] += Lij # (exploits fancy indexing + broadcasting)
+
+  return L  
+
 class Closed_Form_Matting(object):
   """
   this class implements a closed-form matting algorithm to estimate alpha values
@@ -269,15 +319,13 @@ class Closed_Form_Matting(object):
   Radke for reference.
   """
 
-  def __init__(self, img, tm, lws=3, overlap=1.0/3, eps=1e-7, lam=100):
+  def __init__(self, img, tm, lws=3, eps=1e-7, lam=100):
 
     # inputs ...................................................................
     # img               input image. [y x {rgb}] (values b/w 0 and 1)
     # tm                trimap. [y x {rgb}] (0:bg, 1:fg, 0.5:unknown)
     # lws               size of local window is: lws x lws. code assumed this
     #                   is an odd number. (int)
-    # overlap           fraction overlap b/w adjacent windows. (float)
-    #                   (default = 1.0/3)
     # eps               regularization term to contrain linear coefficient for
     #                   pixel value. (float) (default = 1e-7)
     # lam               regularization term to contrain estimated alpha to
@@ -285,68 +333,22 @@ class Closed_Form_Matting(object):
     #
     # outputs ..................................................................
     # a                 alpha matte. [y x {rgb}]
-    
-    self.img = img
-    self.N = self.img.size/3
-    self.ny,self.nx,_ = self.img.shape
-    self.tm = tm
-    self.lws = lws
-    self.r = (lws-1)/2 # window "radius"
-    self.W = pow(self.lws,2)
-    self.overlap = overlap
-    self.dwin = int(self.lws*(1-overlap)) # num pixels for window to shift
-    self.eps = eps
 
-    L = self.matting_laplacian()
-    pdb.set_trace()
-    ak = np.matrix(np.ravel(tm[:,:,0])).T # known alphas
-    d = np.ravel(np.array(tm[:,:,0]==0)+(tm[:,:,0]==1).astype(int))
-    D = lil_matrix(np.diag(d))
-    self.a = la.lstsq(L+lam*D,lam*ak)[0]
+    # get matting laplacian
+    r = (lws-1)/2 # window "radius"
+    L = csc_matrix(matting_laplacian(img, r, eps))
+    tm = tm[:,:,0]
 
-  def matting_laplacian(self):
+    ak = np.array([np.ravel(tm)]).T # known alphas
+    d = np.ravel(((tm==0)|(tm==1)).astype(int))
+    D = csc_matrix(np.diag(d))
+    self.a = spsolve(L+lam*D,lam*ak) # alpha as a vector
 
-    # gets the matting laplacian L, which is used in a minimization problem used
-    # to obtain the alpha values.
-    #
-    # outputs ..................................................................
-    # a                 alpha values. [x y {rgb}]
-    
-    I,r,N = self.img,self.r,self.N
-    eye = np.matrix(np.eye(3))
-    L = lil_matrix((N,N))
+    # reshape to [ny,nx,{rgb}] and limit range to [0,1]
+    self.a = color.gray2rgb(np.reshape(self.a,tm.shape))
+    self.a[self.a<0] = 0
+    self.a[self.a>1] = 1
 
-    # this uses equation 2.36 in the Radke book, but performs the order of
-    # operations differently: instead of filling in L(i,j) by finding all
-    # windows that contain both pixels i and j, it slides the window over the
-    # image and for each position, for each (i,j) within the window, adds the
-    # appropriate value to L(i,j). this is more efficient since it requires
-    # computing the mean and covariance for a given window only once.
-
-    # slide window over each position in image
-    for wy in range(self.r,self.ny-self.r): # window y position
-      print wy
-      for wx in range(self.r,self.nx-self.r): # window x position
-
-        mu, cov = calc_mu_icov(I[wy-r:wy+r+1,wx-r:wx+r+1,:])
-        icov = la.inv(cov+self.eps/self.W*eye)
-
-        # (xx[i], yy[i]) is (x,y) index of pixel i in window
-        # li[i] is linear index, i.e. pos in matrix, of pixel i
-        xy = np.mgrid[wy-r:wy+r+1,wx-r:wx+r+1]
-        yy, xx = np.ravel(xy[0]), np.ravel(xy[1])
-        li = yy*self.nx+xx
-        
-        tot = 0.0
-        # for each pair of pixels in the window
-        for ii in range(len(li)):
-          for ij in range(len(li)):
-            if li[ii] >= li[ij]: # L is symmetric, fill in upper part at the end
-              Ii = np.matrix(I[yy[ii],xx[ii],:]).T
-              Ij = np.matrix(I[yy[ij],xx[ij],:]).T
-              L[li[ii],li[ij]] += int(ii==ij)-1.0/self.W*(1+(Ii-mu).T*icov*(Ij-mu))
-
-    return L  
 
 # ------------------------------------------------------------------------------
 
@@ -368,7 +370,7 @@ if __name__ == '__main__':
     sz = (int(nx*fs),int(ny*fs),3) # new size
     img = tform.resize(img,sz,mode='constant')
     tm = tform.resize(tm,sz,mode='constant')
-    tm[(tm!=0)*(tm!=1)] = .5
+    tm[(tm!=0)&(tm!=1)] = .5
     gta = tform.resize(gta,sz,mode='constant')
 
   # which algorithm to run?
@@ -387,5 +389,8 @@ if __name__ == '__main__':
   if alg == 'closed-form':
     m = Closed_Form_Matting(img, tm.copy())
     pp.figure(1)
-    pp.imshow(m.a)
+    pp.imshow(m.a*img)
+    pp.figure(2)
+    pp.imshow(tm)
+    pp.show()
 
