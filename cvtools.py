@@ -4,27 +4,20 @@
 # there's no reason you should actually be using this.
 
 import os, sys
-import imageio
-import matplotlib.image as im
+import matplotlib as mp
 import matplotlib.pyplot as pp
-from mpl_toolkits.mplot3d import Axes3D
 import numpy as np
-import pylab as pl
-import scipy.linalg as la
-import scipy.misc
-from scipy.sparse import lil_matrix
-from scipy.sparse import csc_matrix
-from scipy.sparse.linalg import lsqr
-from scipy.sparse.linalg import spsolve
-import skimage.color as color
-import skimage.transform as tform
-import sizeof
+from PIL import Image as image
+import scipy as sp
+import skimage as sk
+import skimage.transform
+import progressbar as pb
 
 from numba import jit, jitclass
 from numba import int32, float32
 
-import pdb
-import progressbar as pb
+# global variables
+verbose = 1
 
 # utility functions ------------------------------------------------------------
 
@@ -32,6 +25,8 @@ def imshow(m):
   pp.imshow(m)
   pp.show()
 
+def imread(f):
+  return np.asarray(image.open(f)).astype(np.float64)/255
 
 # ............................................................................
 
@@ -144,11 +139,11 @@ class Bayesian_Matting(object):
           if np.count_nonzero(self.tm[ii]==1)/3>=self.npmin and \
               np.any(np.isnan(fgmu)):
             fgmu, fgicov = calc_mu_icov(self.img[ii][self.tm[ii]==1])
-            fgicov = la.inv(fgicov)
+            fgicov = sp.linalg.inv(fgicov)
           if np.count_nonzero(self.tm[ii]==0)/3>=self.npmin and \
               np.any(np.isnan(bgmu)):
             bgmu, bgicov = calc_mu_icov(self.img[ii][self.tm[ii]==0])
-            bgicov = la.inv(bgicov)
+            bgicov = sp.linalg.inv(bgicov)
           if not np.any(np.isnan(fgmu)) and not np.any(np.isnan(bgmu)):
             break
 
@@ -239,7 +234,7 @@ class Bayesian_Matting(object):
       b = np.vstack((b11,b21))
 
       # solve system using least-squares
-      x = np.matrix(la.lstsq(A,b)[0])
+      x = np.matrix(sp.linalg.lstsq(A,b)[0])
 
       # use computed fg and bg values to estimate alpha
       F,B = x[:3,0], x[3:,0]
@@ -256,7 +251,6 @@ class Bayesian_Matting(object):
 
 # closed-form matting ----------------------------------------------------------
 
-@jit
 def matting_laplacian(I, r, eps):
 
   # gets the matting laplacian L, which is used in a minimization problem used
@@ -272,36 +266,49 @@ def matting_laplacian(I, r, eps):
   #
   
   [ny,nx,_] = I.shape
-  N = nx*ny # num pixels in image
-  W = (2*r+1)**2 # num pixels in window
+  n = nx*ny # num pixels in image
+  w = (2*r+1)**2 # num pixels in window
   eye = np.matrix(np.eye(3))
-  L = lil_matrix((N,N))
+  W = sp.sparse.dok_matrix((n,n))
+
+  if verbose > 0:
+    print('constructing matting laplacian:')
+    widgets = [pb.Bar(':',left='[',right=']'), ' ', pb.ETA()]
+    bar = pb.ProgressBar(widgets=widgets, max_value=ny-2*r, initial_value=0)
 
   # slide window over each position in image
   for wy in range(r,ny-r): # window y position
+    if verbose > 0:
+      bar.update(wy-r)
     for wx in range(r,nx-r): # window x position
 
       # part of window in image
-      Iw = I[wy-r:wy+r+1,wx-r:wx+r+1,:]
+      Iw = np.transpose(I[wy-r:wy+r+1,wx-r:wx+r+1,:],(1,0,2))
 
       # calculate mean and regularized inv covariance matrix of pixels in window
       mu, cov = calc_mu_icov(Iw)
-      icov = la.inv(cov+eps/W*eye)
+      icov = sp.linalg.inv(cov+eps/w*eye)
 
       # get linear indices (row-major) of all pixels in window
-      k = np.ravel(np.arange(wy-r,wy+r+1)[:,np.newaxis]*nx+
-          np.arange(wx-r,wx+r+r))[np.newaxis]
+      # k = np.ravel(np.arange(wy-r,wy+r+1)[:,np.newaxis]+
+      #     np.arange(wx-r,wx+r+1)*ny)[np.newaxis]
+      k = np.ravel(np.arange(wx-r,wx+r+1)[:,np.newaxis]*ny+
+          np.arange(wy-r,wy+r+1))[np.newaxis]
 
-      # construct a [W x 3] matrix containing rgb values of all pixels in window
-      Ik = np.matrix(np.reshape(Iw,(W,3))).T
+      # construct a [w x 3] matrix containing rgb values of all pixels in window
+      Ik = np.matrix(np.reshape(Iw,(w,3))).T
 
-      # vector where each element contains the value to add to an entry in L
-      Lij = np.eye(W)-1.0/W*(Ik-mu).T*icov*(Ik-mu)
+      # matrix where each element contains the value to add to an entry in L
+      Wij = 1.0/w*(1+(Ik-mu).T*icov*(Ik-mu))
 
       # add to matting laplacian
-      L[k.T,k] += Lij # (exploits fancy indexing + broadcasting)
+      W[k.T,k] += Wij # (exploits fancy indexing + broadcasting)
 
-  return L  
+  if verbose > 0:
+    bar.finish()
+
+  L = (sp.sparse.diags(np.ravel(np.sum(W,1)),0)-W).T
+  return L
 
 class Closed_Form_Matting(object):
   """
@@ -314,9 +321,6 @@ class Closed_Form_Matting(object):
   A. Levin, D. Lischinski, and Y. Weiss. A closed-form solution to natural
   image matting. IEEE Transactions on Pattern Analysis and Machine
   Intelligence, 30(2):228-42, Feb. 2008.
-
-  however, I used section 2.4 of "Computer Vision for Visual Effects" by Rich
-  Radke for reference.
   """
 
   def __init__(self, img, tm, lws=3, eps=1e-7, lam=100):
@@ -334,20 +338,18 @@ class Closed_Form_Matting(object):
     # outputs ..................................................................
     # a                 alpha matte. [y x {rgb}]
 
-    # get matting laplacian
-    r = (lws-1)/2 # window "radius"
-    L = csc_matrix(matting_laplacian(img, r, eps))
-    tm = tm[:,:,0]
+    a = tm[:,:,0]
+    k = ((a==0)|(a==1)).astype(np.int).T # mask for known alphas
+    D = sp.sparse.diags(np.ravel(k),0)
+    av = np.ravel(a.T)
+    av[(av!=0)&(av!=1)] = 0
+    L = matting_laplacian(img, int((lws-1)/2), eps*lws*lws)
+    ac = sp.sparse.linalg.spsolve(L+lam*D,lam*av)
+    ac = np.reshape(ac,k.shape).T
+    ac[ac<0] = 0
+    ac[ac>1] = 1
+    self.a = ac[:,:,np.newaxis]
 
-    ak = np.array([np.ravel(tm)]).T # known alphas
-    d = np.ravel(((tm==0)|(tm==1)).astype(int))
-    D = csc_matrix(np.diag(d))
-    self.a = spsolve(L+lam*D,lam*ak) # alpha as a vector
-
-    # reshape to [ny,nx,{rgb}] and limit range to [0,1]
-    self.a = color.gray2rgb(np.reshape(self.a,tm.shape))
-    self.a[self.a<0] = 0
-    self.a[self.a>1] = 1
 
 
 # ------------------------------------------------------------------------------
@@ -355,26 +357,25 @@ class Closed_Form_Matting(object):
 if __name__ == '__main__':
 
   # load data
-  num = '03'
-  img = im.imread('matting/inp/GT'+num+'.png') # raw image
-  tm = im.imread('matting/tm/1/GT'+num+'.png') # trimap
-  tm[(tm!=0)*(tm!=1)] = .5
-  gta = im.imread('matting/gt/GT'+num+'.png')  # ground-truth alpha
-  colors = ('red','green','blue')
+  img = imread('inp.png') # raw image
+  gta = imread('gt.png')  # ground-truth alpha
+  tm = imread('tm.png')   # trimap
+  tm[(tm!=0)&(tm!=1)] = .5
+  if tm.ndim == 2:
+    tm = np.transpose(np.tile(tm,(3,1,1)),((1,2,0)))
 
   # for test purposes - scale image down to reduce computation time
-  do_lowres = 1
-  if do_lowres:
+  fs = .25 # scale factor
+  if fs != 1.0:
     [nx,ny,_] = img.shape
-    fs = .25 # scale factor
     sz = (int(nx*fs),int(ny*fs),3) # new size
-    img = tform.resize(img,sz,mode='constant')
-    tm = tform.resize(tm,sz,mode='constant')
+    img = skimage.transform.resize(img,sz,mode='constant')
+    gta = skimage.transform.resize(gta,sz,mode='constant')
+    tm = skimage.transform.resize(tm,sz,mode='constant')
     tm[(tm!=0)&(tm!=1)] = .5
-    gta = tform.resize(gta,sz,mode='constant')
 
   # which algorithm to run?
-  alg = 'bayesian'
+  alg = 'closed-form'
   if alg == 'bayesian':
     m = Bayesian_Matting(img, tm.copy())
     pp.figure(1)
@@ -390,7 +391,5 @@ if __name__ == '__main__':
     m = Closed_Form_Matting(img, tm.copy())
     pp.figure(1)
     pp.imshow(m.a*img)
-    pp.figure(2)
-    pp.imshow(tm)
     pp.show()
 
