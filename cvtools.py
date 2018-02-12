@@ -5,7 +5,7 @@
 
 import os, sys
 import matplotlib as mp
-import matplotlib.pyplot as pp
+import matplotlib.pyplot as pl
 import numpy as np
 from PIL import Image as image
 import scipy as sp
@@ -22,8 +22,8 @@ verbose = 1
 # utility functions ------------------------------------------------------------
 
 def imshow(m):
-  pp.imshow(m)
-  pp.show()
+  pl.imshow(m)
+  pl.show()
 
 def imread(f):
   return np.asarray(image.open(f)).astype(np.float64)/255
@@ -351,6 +351,89 @@ class Closed_Form_Matting(object):
     self.a = ac[:,:,np.newaxis]
 
 
+# multi-res blending -----------------------------------------------------------
+
+def downsample2(im, k):
+  # blurs (via convolution) and downsamples image by a factor of 2
+  im = sp.signal.convolve2d(im,k,'same')
+  im = im[::2,::2]
+  return im
+
+def upsample2(im, k):
+  # upsamples by a factor of 2, interpolates, and blurs image (via convolution)
+  [ny,nx] = im.shape
+  imu = np.zeros((ny*2,nx*2))
+  imu[::2,::2] = im
+  l = np.array([.5,1,.5])[np.newaxis]
+  l = l.T*l # bilinear kernel
+  imu = sp.signal.convolve2d(imu,l,'same')
+  imu = sp.signal.convolve2d(imu,k,'same')
+  return imu
+
+def upsample2n(im, k, n):
+  # upsamples image `n` times
+  for i in range(n):
+    im = upsample2(im,k)
+  return im
+
+def GL_pyramids(m, k, N):
+  # constructs multi-scale Gaussian and Laplacian pyramids
+  G = [m] # level 0
+  for i in range(N): # levels 1 to N
+    G.append(downsample2(G[-1],k))
+  L = []
+  for i in range(N): # levels 0 to N-1
+    L.append(G[i]-sp.signal.convolve2d(G[i],k,'same'))
+  L.append(G[N]) # level N
+  return G,L
+
+class Multi_Res_Blending(object):
+  """
+  this class implements multi-resolution blending of two images by blending
+  lower frequencies across wide transition regions and higher frequencies across
+  narrow transition regions. this produces a smoother blending with less
+  noticeable transition between the images.
+
+  I used section 3.1.2 of "Computer Vision for Visual Effects" by Rich Radke for
+  reference.
+  """
+
+  def __init__(self, src, tgt, mask, N=4, lfilt=21, sigma=4):
+
+    # inputs ...................................................................
+    # src               source image. [y x {rgb}] (values b/w 0 and 1)
+    # tgt               target image. [y x {rgb}] (values b/w 0 and 1)
+    # mask              mask for source. [y x] (binary)
+    # N                 num levels in multi-resolution pyramid. (int)
+    #                   (default = 4)
+    # lfilt             length of gaussian filter for convolution. convolution
+    #                   kernel is: lfilt x lfilt. (int)
+    # sigma             standard deviation for gaussian filter. (float)
+    #                   (default = 4)
+    #
+    # outputs ..................................................................
+    # I                 blended image. [y x {rgb}]
+    #
+
+    # compute gaussian convolution kernel
+    g = sp.signal.gaussian(lfilt,sigma)
+    g = g/np.sum(g)
+    k = g[np.newaxis]
+    k = k.T*k
+    I = np.zeros(src.shape)
+    Gm,Lm = GL_pyramids(mask,k,N)
+
+    for ic in range(3): # rgb channels
+      # compute gaussian pyramids for source, target, and mask
+      Gs,Ls = GL_pyramids(src[:,:,ic],k,N)
+      Gt,Lt = GL_pyramids(tgt[:,:,ic],k,N)
+      Li = [] # laplacian of image at each scale
+      for il in range(N+1):
+        Li.append(upsample2n(Gm[il]*Ls[il]+(1-Gm[il])*Lt[il],k,il))
+      I[:,:,ic] = Li[0]+Li[1]+Li[2]+Li[3]+Li[4]
+
+    I[I<0],I[I>1] = 0,1
+    self.I = I
 
 # ------------------------------------------------------------------------------
 
@@ -374,22 +457,31 @@ if __name__ == '__main__':
     tm = skimage.transform.resize(tm,sz,mode='constant')
     tm[(tm!=0)&(tm!=1)] = .5
 
-  # which algorithm to run?
-  alg = 'closed-form'
-  if alg == 'bayesian':
+  # what demo to run?
+  demo = 'multi-res-blending'
+  if demo == 'bayesian':
     m = Bayesian_Matting(img, tm.copy())
-    pp.figure(1)
-    pp.imshow(m.img)
-    pp.figure(2)
-    pp.imshow(m.a)
-    pp.figure(3)
-    pp.imshow(m.a*m.img)
-    pp.figure(4)
-    pp.imshow(tm)
-    pp.show()
-  if alg == 'closed-form':
+    pl.figure(1)
+    pl.imshow(m.img)
+    pl.figure(2)
+    pl.imshow(m.a)
+    pl.figure(3)
+    pl.imshow(m.a*m.img)
+    pl.figure(4)
+    pl.imshow(tm)
+    pl.show()
+  if demo == 'closed-form':
     m = Closed_Form_Matting(img, tm.copy())
-    pp.figure(1)
-    pp.imshow(m.a*img)
-    pp.show()
+    pl.figure(1)
+    pl.imshow(m.a*img)
+    pl.show()
+  if demo == 'multi-res-blending':
+    im1 = imread('apple.png')
+    im2 = imread('orange.png')
+    [ny,nx,_] = im1.shape
+    mask = np.zeros((ny,nx))
+    mask[:,:int(nx/2)] = 1
+    m = Multi_Res_Blending(im1, im2, mask)
+    pl.imshow(m.I,cmap='gray')
+    pl.show()
 
