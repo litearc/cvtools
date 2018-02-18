@@ -4,8 +4,10 @@
 # there's no reason you should actually be using this.
 
 import os, sys
+import igraph as ig
 import matplotlib as mp
 import matplotlib.pyplot as pl
+import networkx as netx
 import numpy as np
 from PIL import Image as image
 import scipy as sp
@@ -48,6 +50,7 @@ def calc_mu_icov(dat):
   cov = (dat-mu)*(dat-mu).T/n # 3x3 covariance matrix
   return mu, cov
 
+# ------------------------------------------------------------------------------
 
 # bayesian matting -------------------------------------------------------------
 
@@ -247,7 +250,7 @@ class Bayesian_Matting(object):
 
     return F,B,a
 
-
+# ------------------------------------------------------------------------------
 
 # closed-form matting ----------------------------------------------------------
 
@@ -348,8 +351,10 @@ class Closed_Form_Matting(object):
     ac = np.reshape(ac,k.shape).T
     ac[ac<0] = 0
     ac[ac>1] = 1
-    self.a = ac[:,:,np.newaxis]
+    [ny,nx] = ac.shape
+    self.a = np.broadcast_to(ac[:,:,np.newaxis], (ny,nx,3))
 
+# ------------------------------------------------------------------------------
 
 # multi-res blending -----------------------------------------------------------
 
@@ -437,51 +442,74 @@ class Multi_Res_Blending(object):
 
 # ------------------------------------------------------------------------------
 
-if __name__ == '__main__':
+# graph-cut compositing --------------------------------------------------------
 
-  # load data
-  img = imread('inp.png') # raw image
-  gta = imread('gt.png')  # ground-truth alpha
-  tm = imread('tm.png')   # trimap
-  tm[(tm!=0)&(tm!=1)] = .5
-  if tm.ndim == 2:
-    tm = np.transpose(np.tile(tm,(3,1,1)),((1,2,0)))
+class Graph_Cut_Compositing(object):
+  """
+  this class composits two aligned images by finding the minimum energy seam
+  to stitch the images together, i.e. where the stitching is least noticeable.
+  """
 
-  # for test purposes - scale image down to reduce computation time
-  fs = .25 # scale factor
-  if fs != 1.0:
-    [nx,ny,_] = img.shape
-    sz = (int(nx*fs),int(ny*fs),3) # new size
-    img = skimage.transform.resize(img,sz,mode='constant')
-    gta = skimage.transform.resize(gta,sz,mode='constant')
-    tm = skimage.transform.resize(tm,sz,mode='constant')
-    tm[(tm!=0)&(tm!=1)] = .5
+  def __init__(self, im, mask):
+    
+    # inputs ...................................................................
+    # im                list of images. list of [x y {rgb}]
+    # mask              masks for the images. list of [x y]
+    #
+    # outputs ..................................................................
+    # m                 stitched image. [x y {rgb}]
+ 
+    nim = len(im)
+    if nim != 2:
+      print('currently, only stitching 2 images is supported')
+      return
 
-  # what demo to run?
-  demo = 'multi-res-blending'
-  if demo == 'bayesian':
-    m = Bayesian_Matting(img, tm.copy())
-    pl.figure(1)
-    pl.imshow(m.img)
-    pl.figure(2)
-    pl.imshow(m.a)
-    pl.figure(3)
-    pl.imshow(m.a*m.img)
-    pl.figure(4)
-    pl.imshow(tm)
-    pl.show()
-  if demo == 'closed-form':
-    m = Closed_Form_Matting(img, tm.copy())
-    pl.figure(1)
-    pl.imshow(m.a*img)
-    pl.show()
-  if demo == 'multi-res-blending':
-    im1 = imread('apple.png')
-    im2 = imread('orange.png')
-    [ny,nx,_] = im1.shape
-    mask = np.zeros((ny,nx))
-    mask[:,:int(nx/2)] = 1
-    m = Multi_Res_Blending(im1, im2, mask)
-    pl.imshow(m.I,cmap='gray')
-    pl.show()
+    self.im = im
+    self.mask = mask
+    self.get_graph()
+
+  def get_graph(self):
+
+    [ny,nx,_] = self.im[0].shape
+    ip = lambda ix,iy : iy*nx+ix
+
+    # constructing the graph one vertex/edge at a time is very slow. instead,
+    # it is better to add all the vertices and edges using one call. with
+    # igraph, vertices are automatically created if we pass a list of edges.
+    
+    # for the edges connecting the pixel vertices, we first create a 2D array
+    # with each pixel index. for the vertical edges (e.g.), we stack two 2D
+    # arrays (to create a 3D array with two layers): one with the first ny-1
+    # rows, and one with the last ny-1 rows. then, at a given (x,y) position,
+    # the indices in the two layers are the vertices the edge must connect.
+
+    ii = np.arange(nx*ny).reshape((ny,nx)) # row-major order
+    ev = np.concatenate((ii[1:,:].ravel()[None], ii[:-1,:].ravel()[None]))
+    ev = list(map(tuple,ev.T)) # vertical edges
+    eh = np.concatenate((ii[:,1:].ravel()[None], ii[:,:-1].ravel()[None]))
+    eh = list(map(tuple,eh.T)) # horizontal edges
+
+    # create edges from source to each source pixel. here, for the source
+    # edges (e.g.), we create a 2D array with two columns. the 1st column
+    # contains only the id of the source node, while the second column
+    # contains the ids of each source pixel.
+
+    id_src, id_tgt = nx*ny, nx*ny+1 # ids of src and tgt nodes
+    isrc, itgt = self.mask[0]==1, self.mask[1]==1 # ids of src and tgt pixels
+    nsrc, ntgt = len(isrc), len(itgt)
+    
+    es = (id_src*np.ones((nsrc,1),dtype=np.int32), ii[isrc].ravel()[None].T)
+    es = list(map(tuple, np.hstack(es))) # source edges
+    et = (id_tgt*np.ones((ntgt,1),dtype=np.int32), ii[itgt].ravel()[None].T)
+    et = list(map(tuple, np.hstack(et))) # target edges
+
+    # create graph
+    e = ev+eh+es+et
+    g = ig.Graph(e)
+
+  def get_weight(self, ix1, iy1, ix2, iy2):
+    im1 = self.im[0]
+    im2 = self.im[1]
+    return np.sum(np.square(im1[iy1,ix1,:]-im2[iy1,ix1])+
+        np.square(im1[iy2,ix2,:]-im2[iy2,ix2]))
 
