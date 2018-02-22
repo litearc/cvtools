@@ -30,17 +30,17 @@ def imshow(m):
 def imread(f):
   return np.asarray(image.open(f)).astype(np.float64)/255
 
-# ............................................................................
+# ..............................................................................
 
 @jit
 def calc_mu_icov(dat):
   
   # gets the mean and covariance of a set of rgb pixels.
   #
-  # inputs ...................................................................
+  # inputs .....................................................................
   # dat               input rgb values. (list) [r1,g1,b1,r2,g2,b2,...]
   #
-  # outputs...................................................................
+  # outputs.....................................................................
   # mu                mean rgb value. (3 x 1 matrix) [r;g;b]
   # cov               covariance matrix. (3 x 3 matrix)
 
@@ -470,7 +470,7 @@ class Graph_Cut_Compositing(object):
 
   def get_graph(self):
 
-    [ny,nx,_] = self.im[0].shape
+    [ny,nx,nc] = self.im[0].shape
     ip = lambda ix,iy : iy*nx+ix
 
     # constructing the graph one vertex/edge at a time is very slow. instead,
@@ -496,7 +496,7 @@ class Graph_Cut_Compositing(object):
 
     id_src, id_tgt = nx*ny, nx*ny+1 # ids of src and tgt nodes
     isrc, itgt = self.mask[0]==1, self.mask[1]==1 # ids of src and tgt pixels
-    nsrc, ntgt = len(isrc), len(itgt)
+    nsrc, ntgt = np.sum(isrc), np.sum(itgt)
     
     es = (id_src*np.ones((nsrc,1),dtype=np.int32), ii[isrc].ravel()[None].T)
     es = list(map(tuple, np.hstack(es))) # source edges
@@ -507,9 +507,29 @@ class Graph_Cut_Compositing(object):
     e = ev+eh+es+et
     g = ig.Graph(e)
 
-  def get_weight(self, ix1, iy1, ix2, iy2):
-    im1 = self.im[0]
-    im2 = self.im[1]
-    return np.sum(np.square(im1[iy1,ix1,:]-im2[iy1,ix1])+
-        np.square(im1[iy2,ix2,:]-im2[iy2,ix2]))
+    # set weights for the edges. like with the vertices/edges, it is far more
+    # efficient to set all the weights at once than to iterate over the edges.
+    big_val = 1e6 # large weight b/w src/tgt nodes and src/tgt pixels
+
+    # weight function is: ||im1(x1,y1)-im2(x1,y1)|| + ||im1(x2,y2)-im2(x2,y2)||
+    # A. A. Efros and W. T. Freeman. Image quilting for texture synthesis and
+    # transfer. In ACM SIGGRAPH (ACM Transactions on Graphics), 2001.
+    mdiff = np.sum(np.square(self.im[0]-self.im[1]),2)
+    wv = list((mdiff[1:,:]+mdiff[:-1,:]).ravel())
+    wh = list((mdiff[:,1:]+mdiff[:,:-1]).ravel())
+    ws, wt = nsrc*[big_val], ntgt*[big_val]
+    w = wv+wh+ws+wt # all weights
+
+    # do the min-cut!
+    mcut = g.mincut(id_src, id_tgt, w)
+
+    # combine images together
+    mcomb = np.zeros((ny,nx,nc)) # combined image
+    for l in range(2): # src, tgt
+      ii = np.array(mcut.partition[l]) # pixels in src or tgt image
+      i = np.where((ii==id_src)|(ii==id_tgt))[0] # indices of src/tgt nodes
+      ii = np.delete(ii,i) # remove src/tgt nodes
+      ix, iy = ii%nx, (ii/nx).astype(np.int32) # x,y indices of src image
+      mcomb[iy,ix,:] = self.im[l][iy,ix,:]
+    self.mcomb = mcomb
 
