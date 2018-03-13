@@ -4,10 +4,10 @@
 # there's no reason you should actually be using this.
 
 import os, sys
+import cv2
 import igraph as ig
 import matplotlib as mp
 import matplotlib.pyplot as pl
-import networkx as netx
 import numpy as np
 from PIL import Image as image
 import scipy as sp
@@ -21,6 +21,25 @@ from numba import int32, float32
 # global variables
 verbose = 1
 
+colors = {
+  'blue'      : '#348abd',
+  'purple'    : '#7a68a6',
+  'red'       : '#a60628',
+  'green'     : '#467821',
+  'pink'      : '#cf4457',
+  'turquoise' : '#188487',
+  'orange'    : '#e24a33'
+}
+tcolors = {
+  'blue'      : '#348abd80',
+  'purple'    : '#7a68a680',
+  'red'       : '#a6062880',
+  'green'     : '#46782180',
+  'pink'      : '#cf445780',
+  'turquoise' : '#18848780',
+  'orange'    : '#e24a3380'
+}
+
 # utility functions ------------------------------------------------------------
 
 def imshow(m):
@@ -29,6 +48,30 @@ def imshow(m):
 
 def imread(f):
   return np.asarray(image.open(f)).astype(np.float64)/255
+
+def fread(f):
+  fp = open(f,'r')
+  l = fp.readlines()
+  nv,nc = len(l),len(l[0].split())
+  o = np.zeros((nv,nc))
+  for i in range(nv):
+    o[i,:] = l[i].split()
+  return o
+
+def getnz(f):
+  m = imread(f)[:,:,0]
+  o = np.nonzero(m)
+  return np.vstack((o[1],o[0]))
+
+def get_labeled_pts(f):
+  m = np.asarray(image.open(f))[:,:,0]
+  p = np.nonzero(m)
+  n = len(p[0])
+  o = np.zeros((n,2))
+  for i in range(n):
+    l = m[p[0][i],p[1][i]]
+    o[l-1,0],o[l-1,1] = p[1][i],p[0][i]
+  return o
 
 # ..............................................................................
 
@@ -532,4 +575,118 @@ class Graph_Cut_Compositing(object):
       ix, iy = ii%nx, (ii/nx).astype(np.int32) # x,y indices of src image
       mcomb[iy,ix,:] = self.im[l][iy,ix,:]
     self.mcomb = mcomb
+
+# ------------------------------------------------------------------------------
+
+# graph-cut compositing --------------------------------------------------------
+
+def get_fundamental_matrix(p1, p2, im1, im2):
+
+  # gets the fundamental matrix associated with sets of points (correspondences)
+  # in two images. requires at least 8 points (more is better).
+  #
+  # inputs .....................................................................
+  # p1                points in image 1. [points {x,y}]
+  # p2                points in image 2. [points {x,y}]
+  #
+  # outputs.....................................................................
+  # F                 fundamental matrix. (3 x 3 matrix)
+
+  # format data points to (3 x n) matrices
+  n = np.shape(p1)[0] # num points
+  p1, p2 = np.copy(p1).transpose((1,0)), np.copy(p2).transpose((1,0))
+  p1, p2 = np.resize(p1,(3,n)), np.resize(p2,(3,n))
+  p1[2,:], p2[2,:] = 1,1
+
+  # first, normalize data so the data points in each image are centered about
+  # the origin and have a mean distance from the origin of sqrt(2). this is
+  # achieved by translation and scaling, captured in 3 x 3 matrices T1 and T2
+  # (the matrices are used again later to de-normalize the fundamental matrix).
+  m1, m2 = np.mean(p1,1), np.mean(p2,1) # mean (x,y) positions for images
+  d1 = np.mean(np.sqrt(np.sum(p1**2,1))) # mean distance for image 1
+  d2 = np.mean(np.sqrt(np.sum(p2**2,1))) # " for image 2
+  s = np.sqrt(2)
+  T1 = np.matrix(np.diag([s/d1,s/d1,1]))*np.matrix(
+      [[1,0,-m1[0]],[0,1,-m1[1]],[0,0,1]])
+  T2 = np.matrix(np.diag([s/d2,s/d2,1]))*np.matrix(
+      [[1,0,-m2[0]],[0,1,-m2[1]],[0,0,1]])
+  p1, p2 = T1*p1, T2*p2
+
+  x1, y1 = np.array(p1[0,:].T), np.array(p1[1,:].T)
+  x2, y2 = np.array(p2[0,:].T), np.array(p2[1,:].T)
+  A = np.hstack((x1*x2, y1*x2, x2, x1*y2, y1*y2, y2, x1, y1, np.ones((n,1))))
+
+  # A should be singular but due to noise will (almost certainly) be
+  # non-singular, so to find the F that minimizes ||A*F||_2, take the SVD of A
+  # and look at the smallest right singular vector.
+  U,s,Vt = sp.linalg.svd(A)
+  F = np.matrix(Vt[-1,:].reshape((3,3)))
+
+  # F should also be singular, so again use the SVD, this time zero-ing out the
+  # smallest singular value to make rank(F) == 2.
+  U,s,Vt = sp.linalg.svd(F)
+  F = np.matrix(U)*np.matrix(np.diag([s[0],s[1],0]))*np.matrix(Vt)
+  F = T2.T*F*T1 # de-normalize
+  return F
+
+# ..............................................................................
+
+def get_null_vec(A):
+  U,s,Vt = sp.linalg.svd(np.matrix(A))
+  return Vt[-1,:].T
+
+# ..............................................................................
+
+def draw_epipolar_lines(p1, p2, im1, im2, F):
+  
+  # append column of 1s to positions
+  n = p1.shape[0]
+  p1,p2 = np.matrix(np.copy(p1)), np.matrix(np.copy(p2))
+  p1 = np.matrix(np.hstack((p1[:,0],p1[:,1],np.ones((n,1)))))
+  p2 = np.matrix(np.hstack((p2[:,0],p2[:,1],np.ones((n,1)))))
+
+  [ny,nx,nc] = im1.shape
+  # we assume the epipolar lines are not vertical (pretty safe assumption)
+  e1 = np.array(p2*F) # e = [a,b,c], where a*x+b*y+c = 0 <-> y = (-c-a*x)/b
+  e2 = np.array((F*p1.T).T) 
+  ep1 = get_null_vec(e1) # epipole of image 1
+  ep2 = get_null_vec(e2)
+  ep1 /= ep1[2]
+  ep2 /= ep2[2]
+
+  xl,xu = 0,ep1[0]
+  y = lambda e,x: -(e[:,2]+e[:,0]*x)/e[:,1]
+  yl1,yu1 = y(e1,xl), y(e1,xu)
+
+  # check that epipole is at convergence of lines
+  # pl.figure(1)
+  # pl.plot([xl,xu], [yl1,yu1], color=colors['blue'])
+  # pl.plot(ep1[0], ep1[1], 'ro')
+  # pl.show()
+  # return
+
+  # get epipolar lines
+  xl,xu = 0,nx-1
+  y = lambda e,x: -(e[:,2]+e[:,0]*x)/e[:,1]
+  yl1,yu1 = y(e1,xl), y(e1,xu)
+  yl2,yu2 = y(e2,xl), y(e2,xu)
+  
+  pl.figure(1,(16,8))
+  pl.subplot(1,2,1)
+  pl.imshow(im1)
+  pl.plot([xl,xu], [yl1,yu1], color = tcolors['blue'])
+  pl.plot(p1[:,0], p1[:,1], color=colors['red'], marker='.', ls='None')
+  pl.axis('off')
+  pl.title('image 1', fontsize=8, weight='demibold')
+
+  pl.subplot(1,2,2)
+  pl.imshow(im2)
+  pl.plot([xl,xu], [yl2,yu2], color = tcolors['blue'])
+  pl.plot(p2[:,0], p2[:,1], color=colors['red'], marker='.', ls='None')
+  pl.axis('off')
+  pl.title('image 2', fontsize=8, weight='demibold')
+
+  pl.show()
+
+# ------------------------------------------------------------------------------
 
