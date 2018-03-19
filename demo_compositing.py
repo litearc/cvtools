@@ -1,6 +1,6 @@
 # this demos the various compositing algorithms found in cvtools
 
-import cvtools
+import cv
 import matplotlib.pyplot as pl
 import numpy as np
 from PIL import Image as image
@@ -9,12 +9,12 @@ import skimage.transform
 path = 'im/compositing/'
 
 # run the multi-resolution blending demo
-im1 = cvtools.imread(path+'apple.png')
-im2 = cvtools.imread(path+'orange.png')
+im1 = cv.util.imread(path+'apple.png')
+im2 = cv.util.imread(path+'orange.png')
 [ny,nx,_] = im1.shape
 mask = np.zeros((ny,nx))
 mask[:,:int(nx/2)] = 1
-m = cvtools.Multi_Res_Blending(im1, im2, mask)
+I = cv.compositing.multi_res_blending(im1, im2, mask)
 pl.figure(1, (8,2))
 pl.subplot(1,4,1)
 pl.imshow(im1)
@@ -29,14 +29,14 @@ pl.imshow(mask,cmap='gray')
 pl.axis('off')
 pl.title('mask', fontsize=8, weight='demibold')
 pl.subplot(1,4,4)
-pl.imshow(m.I)
+pl.imshow(I)
 pl.axis('off')
 pl.title('blended image', fontsize=8, weight='demibold')
 pl.show()
 
 # run graph-cut compositing demo
-im1 = cvtools.imread(path+'strawberries-left.png')
-im2 = cvtools.imread(path+'strawberries-right.png')
+im1 = cv.util.imread(path+'strawberries-left.png')
+im2 = cv.util.imread(path+'strawberries-right.png')
 
 # for test purposes
 ny = 128
@@ -49,7 +49,7 @@ mask1, mask2 = np.zeros((ny,nx)), np.zeros((ny,nx))
 mask1[1:ny-1,1:48] = 1
 mask2[1:ny-1,-48:-1] = 1
 
-m = cvtools.Graph_Cut_Compositing([im1,im2], [mask1,mask2])
-pl.imshow(m.mcomb)
+m = cv.compositing.graph_cut_compositing([im1,im2], [mask1,mask2])
+pl.imshow(m)
 pl.show()
 
