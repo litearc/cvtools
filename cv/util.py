@@ -3,6 +3,30 @@ from PIL import Image as image
 
 # -----------------------------------------------------------------------------
 
+# nice color scheme
+colors = {
+  'blue'      : '#348abd',
+  'purple'    : '#7a68a6',
+  'red'       : '#a60628',
+  'green'     : '#467821',
+  'pink'      : '#cf4457',
+  'turquoise' : '#188487',
+  'orange'    : '#e24a33'
+}
+
+# same colors are above but transparent
+tcolors = {
+  'blue'      : '#348abd80',
+  'purple'    : '#7a68a680',
+  'red'       : '#a6062880',
+  'green'     : '#46782180',
+  'pink'      : '#cf445780',
+  'turquoise' : '#18848780',
+  'orange'    : '#e24a3380'
+}
+
+# -----------------------------------------------------------------------------
+
 def imread(f):
 
   # loads an image as a numpy array (for some reason, I was getting slightly
