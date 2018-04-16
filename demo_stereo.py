@@ -12,17 +12,17 @@ pt1 = cv.util.get_labeled_pts(path+'1-points.png')
 im2 = cv.util.imread(path+'2.jpg')
 pt2 = cv.util.get_labeled_pts(path+'2-points.png')
 
-F = cv.stereo.get_fundamental_matrix(pt1, pt2)
-m1,b1,m2,b2 = cv.stereo.get_epipolar_lines(pt1, pt2, F)
-e1,e2 = cv.stereo.get_epipoles(F)
-
-[ny,nx,nc] = im1.shape
-xl, xu = 0, nx-1
-yl1, yu1 = m1*xl+b1, m1*xu+b1
-yl2, yu2 = m2*xl+b2, m2*xu+b2
-
-from cv.util import colors, tcolors
-
+# F = cv.stereo.get_fundamental_matrix(pt1, pt2)
+# m1,b1,m2,b2 = cv.stereo.get_epipolar_lines(pt1, pt2, F)
+# e1,e2 = cv.stereo.get_epipoles(F)
+#
+# [ny,nx,nc] = im1.shape
+# xl, xu = 0, nx-1
+# yl1, yu1 = m1*xl+b1, m1*xu+b1
+# yl2, yu2 = m2*xl+b2, m2*xu+b2
+#
+# from cv.util import colors, tcolors
+#
 # # draw figures
 # pl.figure(1,(16,8))
 # pl.subplot(1,2,1)
@@ -54,5 +54,7 @@ from cv.util import colors, tcolors
 # pl.title('image 2', fontsize=8, weight='demibold')
 # pl.show()
 
-cv.stereo.rectify_images(im1, e1)
+# .............................................................................
+
+cv.stereo.rectify_images(im1, pt1, im2, pt2)
 

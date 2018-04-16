@@ -3,6 +3,7 @@ import numpy as np
 from PIL import Image as im
 import scipy as sp
 import skimage.transform as tf
+import pdb
 
 # epipolar geometry -----------------------------------------------------------
 
@@ -46,6 +47,15 @@ def get_fundamental_matrix(p1, p2):
   F = np.matrix(U)*np.matrix(np.diag([s[0],s[1],0]))*np.matrix(Vt)
   F = T2.T*F*T1 # de-normalize
   return F
+
+# -----------------------------------------------------------------------------
+
+def cross_prod_matx(a):
+
+  # given a vector 'a', returns a matrix 'A' such that axb = A*b.
+  # (where axb is the cross-product of a and b)
+
+  return np.matrix([[0,-a[2],a[1]], [a[2],0,-a[0]], [-a[1],a[0],0]])
 
 # -----------------------------------------------------------------------------
 
@@ -153,79 +163,116 @@ def get_epipoles(F):
 
 # -----------------------------------------------------------------------------
 
-def rectify_images(m1, e1):
+def rectify_images(m1, p1, m2, p2):
 
-  m1 = m1*255 # scale from [0,1] to [0,255] (need for PIL)
-  ex,ey = e1[0],e1[1] # location of epipole
+  # rectifies two images so that the epipolar lines are horizontal, and
+  # corresponding points in the images are found on the same horizontal line.
+  #
+  # based on the method described in the CS231A Computer Vision course notes.
+  #
+  # im1, im2 = rectify_images(m1, p1, m2, p2)
+  #
+  # inputs ....................................................................
+  # m1                image 1. [y x {rgb}]
+  # p1                points in image 1. [points {x,y}]
+  # m2                image 2. [y x {rgb}]
+  # p2                points in image 2. [points {x,y}]
+  # 
+  # outputs ...................................................................
+  # im1               rectified image 1. [y x {rgb}]
+  # im2               rectified image 2. [y x {rgb}]
 
-  # translate image so image center is at center of rotation
-  [ny,nx,_] = m1.shape
-  T = np.matrix([[1,0,-nx/2], [0,1,-ny/2], [0,0,1]])
+  F = get_fundamental_matrix(p1, p2)
+  e1, e2 = get_epipoles(F)
 
-  # rotate image so epipole is at y = 0
-  ex,ey = e1[0]-nx/2,e1[1]-ny/2
-  d = np.sqrt(ex*ex+ey*ey)
+  # (see Hartley and Zisserman, multiple view geometry, ch 11 for details)
+
+  # first, rectify the second image ...........................................
+  # 1. translate image so center is at (0,0)
+  # 2. rotate image so epipole lies on x-axis
+  # 3. apply transformation so epipole maps to infinity
+
+  ny2,nx2,_ = m2.shape
+  T = np.matrix([[1,0,-nx2/2], [0,1,-ny2/2], [0,0,1]]) # translation matrix
+  ex,ey = e2[0]-nx2/2, e2[1]-ny2/2 # epipole location after translation
+  d = np.sqrt(ex*ex+ey*ey) # epipole distance from origin
   a = -np.sign(ex)*np.arctan(ey/np.abs(ex))
+  # rotation matrix we need to apply to move epipole to x-axis
   R = np.matrix([[np.cos(a),-np.sin(a),0], [np.sin(a),np.cos(a),0], [0,0,1]])
+  e2rot = R*T*np.matrix([ex,ey,1]).T # epipole location after translation
+  G = np.matrix([ [1,0,0], [0,1,0], [-1/e2rot[0],0,1] ]) # moves epipole to inf
 
-  e = R*T*np.matrix([ex,ey,1]).T # new location of epipole
-  G = np.matrix([ [1,0,0], [0,1,0], [-1/e[0],0,1] ]) # moves epipole to inf
+  H2 = sp.linalg.inv(T)*G*R*T # final transformation matrix for image 1
+  H2 /= H2[2,2]
+  c2 = np.array(H2).ravel()[:8] # http://effbot.org/imagingbook/image.htm
 
-  H = sp.linalg.inv(T)*G*R*T
-  c = np.array(H).ravel()[:8]
+  im2 = im.fromarray((m2*255).astype(np.uint8)) # scale from [0,1] to [0,255]
+  im2 = np.array(im2.transform((nx2,ny2), im.PERSPECTIVE, c2))
 
-  im1 = im.fromarray(m1.astype(np.uint8))
-  im1 = np.array(im1.transform((nx,ny), im.PERSPECTIVE, c))
+  # then, rectify first image by minimizing distance between correspondences ..
+  ny1,nx1,_ = m1.shape
+  e1x = cross_prod_matx(e1)
+  M = e1x*F+np.matrix(e1).T*np.matrix([1,1,1])
+  H1 = H2*M
+  # H1 /= H1[2,2]
+  c1 = np.array(H1).ravel()[:8] # http://effbot.org/imagingbook/image.htm
+
+  print(c1)
+  print(c2)
+
+  im1 = im.fromarray((m1*255).astype(np.uint8)) # scale from [0,1] to [0,255]
+  im1 = np.array(im1.transform((nx1,ny1), im.PERSPECTIVE, c1))
   pl.imshow(im1)
   pl.show()
 
-  # a = np.pi/16
-  # R = np.matrix([ [np.cos(a),-np.sin(a),0], [np.sin(a),np.cos(a),0], [0,0,1] ])
-  # print(R)
+  # # first, transform image 1 so that epipolar lines are horizontal ............
+  # ex,ey = e1[0],e1[1] # location of epipole
   #
-  # H = sp.linalg.inv(T)*R*T
-  # f = tf.ProjectiveTransform(H)
-  # # m1t = tf.warp(m1,f.inverse)
-  # m1t = tf.warp(m1,f)
-  # pl.imshow(m1t)
-  # pl.show()
-
-  # T = np.matrix([[1,0,-800], [0,1,-600], [0,0,1]])
-  # e = np.pi/16
-  # R = np.matrix([[np.cos(e),-np.sin(e),0], [np.sin(e),np.cos(e),0], [0,0,1]])
-  # f = tf.ProjectiveTransform(sp.linalg.inv(T)*R*T)
-  # m1t = tf.warp(m1,f.inverse)
-  # pl.imshow(m1t)
-  # pl.show()
-  
+  # # translate image so image center is at center of rotation
   # [ny,nx,_] = m1.shape
-  # # T = np.matrix([[1,0,-nx/2], [0,1,-ny/2], [0,0,1]])
-  # # f = tf.ProjectiveTransform(T)
+  # T = np.matrix([[1,0,-nx/2], [0,1,-ny/2], [0,0,1]])
   #
-  # a = [-1,1][e1[0]>0]
-  # c = np.sqrt(e1[0]**2+e1[1]**2)
-  # # R = np.matrix([[a*e1[0]/c,a*e1[1]/c,0], [-a*e1[0]/c,a*e1[1]/c,0], [0,0,1]])
-  # # e1new = R*T*np.matrix(e1[:,None])
-  # # G = np.matrix([[1,0,0], [0,1,0], [-1/e1new[0],0,1]])
-  # # H = sp.linalg.inv(T)*G*R*T
+  # # rotate image so epipole is at y = 0
+  # ex,ey = e1[0]-nx/2,e1[1]-ny/2
+  # d = np.sqrt(ex*ex+ey*ey)
+  # a = -np.sign(ex)*np.arctan(ey/np.abs(ex))
+  # R = np.matrix([[np.cos(a),-np.sin(a),0], [np.sin(a),np.cos(a),0], [0,0,1]])
   #
-  # pl.imshow(m1)
-  # pl.plot(1200,800,'ro')
+  # e = R*T*np.matrix([ex,ey,1]).T # new location of epipole
+  # G = np.matrix([ [1,0,0], [0,1,0], [-1/e[0],0,1] ]) # moves epipole to inf
+  #
+  # H2 = sp.linalg.inv(T)*G*R*T # final transformation matrix for image 1
+  # H2 /= H2[2,2]
+  # c = np.array(H2).ravel()[:8] # http://effbot.org/imagingbook/image.htm
+  #
+  # im1 = im.fromarray((m1*255).astype(np.uint8)) # scale from [0,1] to [0,255]
+  # im1 = np.array(im1.transform((nx,ny), im.PERSPECTIVE, c))
+  #
+  # # transform image 2 so correspondences align ................................
+  # v = np.matrix([1,1,1])
+  # M = cross_prod_matx(e2)*F+np.matrix(e2).T*v
+  #
+  # npts = p1.shape[0]
+  # p1h = np.matrix(np.hstack((p1,np.ones((npts,1))))).T
+  # p2h = np.matrix(np.hstack((p2,np.ones((npts,1))))).T
+  # ph1 = H2*M*p1h
+  #
+  # W = p1h.T
+  # b = p2h[0,:].T
+  # a = np.linalg.lstsq(W,b,None)[0]
+  # Ha = np.matrix([[a[0,0],a[1,0],a[2,0]], [0,1,0], [0,0,1]])
+  # H1 = Ha*H2*M
+  # print(Ha)
+  # print(H1)
+  # print(H2)
+  #
+  # c = np.array(H1).ravel()[:8] # http://effbot.org/imagingbook/image.htm
+  # im2 = im.fromarray((m2*255).astype(np.uint8)) # scale from [0,1] to [0,255]
+  # im2 = np.array(im2.transform((nx,ny), im.PERSPECTIVE, c))
+  #
+  # pl.imshow(im1)
   # pl.show()
-  #
-  # # f = tf.ProjectiveTransform(H)
-  # t = np.pi/32
-  # R = np.matrix([[np.cos(t),-np.sin(t),0], [np.sin(t),np.cos(t),0], [0,0,1]])
-  # T = np.matrix([[1,0,-800], [0,1,-600], [0,0,1]])
-  # f = tf.ProjectiveTransform(sp.linalg.inv(T)*R*T)
-  #
-  # pt = np.matrix([1200,800,1]).T
-  # newpt = (sp.linalg.inv(T)*R*T)*pt
-  # print(sp.linalg.inv(T)*R*T*pt)
-  #
-  # mrot = tf.warp(m1, f)
-  # pl.imshow(mrot)
-  # pl.plot(newpt[0], newpt[1], 'ro')
+  # pl.imshow(im2)
   # pl.show()
 
 # -----------------------------------------------------------------------------
