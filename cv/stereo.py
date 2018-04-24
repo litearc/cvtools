@@ -254,17 +254,32 @@ def rectify_images(m1, p1, m2, p2):
   c = tform_coefs(sp.linalg.inv(T)*H2)
   m2 = im.fromarray((m2*255).astype(np.uint8)) # scale from [0,1] to [0,255]
   m2 = np.array(m2.transform((nx,ny), im.PERSPECTIVE, c))
-  pl.imshow(m2, origin='lower')
-  pl.show()
 
   # rectify image 1
   e2cp = cross_prod_matx(e2)
-  M = e2cp*F+.0001*np.matrix(e2).T*np.matrix([1,1,1])
-  c = tform_coefs(sp.linalg.inv(T)*H2*M)
+  M = e2cp*F+np.matrix(e2).T*np.matrix([1,1,1])
+
+  # the two images are now rectified, but image 1 may be severely distorted
+  # along the horizontal direction, so we apply a horizontal shear to minimize
+  # the sos distance between point correspondences in the two images.
+  p2t = np.array(H2*p2)
+  p2t = np.matrix(p2t/p2t[2,:])
+  p1t = np.array(H2*M*p1)
+  p1t = np.matrix(p1t/p1t[2,:])
+  a = np.linalg.lstsq(p1t.T, p2t.T[:,0])[0]
+  HA = np.matrix([[a[0,0],a[1,0],a[2,0]], [0,1,0], [0,0,1]])
+
+  c = tform_coefs(sp.linalg.inv(T)*HA*H2*M)
   m1 = im.fromarray((m1*255).astype(np.uint8)) # scale from [0,1] to [0,255]
   m1 = np.array(m1.transform((nx,ny), im.PERSPECTIVE, c))
-  pl.imshow(m1, origin='lower')
-  pl.show()
+
+  return m1, m2
+
+  # show images
+  # pl.imshow(m2, origin='lower')
+  # pl.show()
+  # pl.imshow(m1, origin='lower')
+  # pl.show()
 
 # -----------------------------------------------------------------------------
 
