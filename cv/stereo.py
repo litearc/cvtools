@@ -7,23 +7,105 @@ import pdb
 
 # epipolar geometry -----------------------------------------------------------
 
+def euc_to_hom(p):
+
+  # converts points from euclidian to homogeneous coordinates.
+  #
+  # o = euc_to_hom(p)
+  #
+  # inputs ....................................................................
+  # p                 points. [{x,y} points]
+  #
+  # outputs ...................................................................
+  # o                 poitns. [{x,y,1} points]
+  
+  p = np.copy(p)
+  n = p.shape[1]
+  p = np.resize(p,(3,n))
+  p[2,:] = 1
+  return np.matrix(p)
+
+def hom_to_euc(p):
+
+  # converts points from homogeneous to euclidian coordinates.
+  #
+  # o = euc_to_hom(p)
+  #
+  # inputs ....................................................................
+  # p                 points. [{x,y,1} points]
+  #
+  # outputs ...................................................................
+  # o                 poitns. [{x,y} points]
+
+  p = np.copy(np.array(p))
+  p = p[:2,:]/p[2,:]
+  return np.matrix(p)
+
+# -----------------------------------------------------------------------------
+
+def get_null_vec(A):
+
+  # finds the "null" vector `x` that minimizes ||A*x||. `A` should ideally be
+  # a matrix with a rank-deficiency of 1, and `x` would be in its null space.
+  # Due to noise, however, A will (likely) be non-singular, so instead we find
+  # the "closest" vector `x`, i.e. minimizes ||A*x||.
+  #
+  # inputs ....................................................................
+  # A                 matrix to find "null" vector for. (n x n matrix)
+  #
+  # outputs ...................................................................
+  # x                 "null vector". (n x 1 vector)
+  
+  U,s,Vt = sp.linalg.svd(np.matrix(A))
+  return Vt[-1,:].T
+
+# -----------------------------------------------------------------------------
+
+def cross_prod_matx(a):
+
+  # given a vector 'a', returns a matrix 'A' such that cross(a,b) = A*b.
+  # (where axb is the cross-product of a and b)
+
+  return np.matrix([[0,-a[2],a[1]], [a[2],0,-a[0]], [-a[1],a[0],0]])
+
+# -----------------------------------------------------------------------------
+
+def tform_coefs(T):
+
+  # given a projective transformation matrix 'T', returns the coefficients
+  # needed to perform the transformation using Pillow's transform function.
+
+  T = sp.linalg.inv(np.copy(T))
+  T = T/T[2,2]
+  return np.array(T).ravel()[:8]
+
+# -----------------------------------------------------------------------------
+
+def rotx(a):
+  return np.matrix([[1,0,0],[0,np.cos(a),-np.sin(a)],[0,np.sin(a),np.cos(a)]])
+def roty(a):
+  return np.matrix([[np.cos(a),0,np.sin(a)],[0,1,0],[-np.sin(a),0,np.cos(a)]])
+def rotz(a):
+  return np.matrix([[np.cos(a),-np.sin(a),0],[np.sin(a),np.cos(a),0],[0,0,1]])
+
+# -----------------------------------------------------------------------------
+
 def get_fundamental_matrix(p1, p2):
 
   # gets the fundamental matrix associated with sets of points (correspondences)
   # in two images. requires at least 8 points (more is better).
   #
   # inputs .....................................................................
-  # p1                points in image 1. [points {x,y}]
-  # p2                points in image 2. [points {x,y}]
+  # p1                points in image 1. [{x,y} points]
+  # p2                points in image 2. [{x,y} points]
   #
   # outputs.....................................................................
   # F                 fundamental matrix. (3 x 3 matrix)
 
   # format data points to (3 x n) matrices
-  n = np.shape(p1)[0] # num points
-  p1, p2 = np.copy(p1).transpose((1,0)), np.copy(p2).transpose((1,0))
-  p1, p2 = np.resize(p1,(3,n)), np.resize(p2,(3,n))
-  p1[2,:], p2[2,:] = 1,1
+  n = p1.shape[1] # num points
+  p1 = euc_to_hom(p1)
+  p2 = euc_to_hom(p2)
 
   # first, normalize data so the data points in each image are centered about
   # the origin and have a mean distance from the origin of sqrt(2). this is
@@ -50,15 +132,6 @@ def get_fundamental_matrix(p1, p2):
 
 # -----------------------------------------------------------------------------
 
-def cross_prod_matx(a):
-
-  # given a vector 'a', returns a matrix 'A' such that axb = A*b.
-  # (where axb is the cross-product of a and b)
-
-  return np.matrix([[0,-a[2],a[1]], [a[2],0,-a[0]], [-a[1],a[0],0]])
-
-# -----------------------------------------------------------------------------
-
 def normalize_pts(p):
 
   # normalizes the position of points so that they are centered about the
@@ -67,37 +140,19 @@ def normalize_pts(p):
   # matrix.
   #
   # inputs .....................................................................
-  # p                 point positions. [points {x,y}]
+  # p                 point positions. [{x,y,1} points]
   #
   # outputs ....................................................................
-  # p                 transformed positions. [points {x,y}]
+  # p                 transformed positions. [{x,y,1} points]
   # T                 transformation matrix. (3 x 3 matrix)
 
   m = np.mean(p,1)
-  d = np.mean(np.sqrt(np.sum(p**2,1)))
-  s = np.sqrt(2)
+  d = np.mean(np.sqrt(np.sum(np.power(p,2),1))) # mean distance
+  s = np.sqrt(2) # want points to have mean distance sqrt(2)
   T = np.matrix(np.diag([s/d,s/d,1]))*np.matrix(
       [[1,0,-m[0]],[0,1,-m[1]],[0,0,1]])
-  p = T*p
+  p = T*p # apply transformation
   return p,T
-
-# -----------------------------------------------------------------------------
-
-def get_null_vec(A):
-
-  # finds the "null" vector `x` that minimizes ||A*x||. `A` should ideally be
-  # a matrix with a rank-deficiency of 1, and `x` would be in its null space.
-  # Due to noise, however, A will (likely) be non-singular, so instead we find
-  # the "closest" vector `x`, i.e. minimizes ||A*x||.
-  #
-  # inputs ....................................................................
-  # A                 matrix to find "null" vector for. (n x n matrix)
-  #
-  # outputs ...................................................................
-  # x                 "null vector". (n x 1 vector)
-  
-  U,s,Vt = sp.linalg.svd(np.matrix(A))
-  return Vt[-1,:].T
 
 # -----------------------------------------------------------------------------
 
@@ -108,8 +163,8 @@ def get_epipolar_lines(p1, p2, F=None):
   # equation: y = m*x+b
   #
   # inputs ....................................................................
-  # p1                point positions in image 1. [points {x,y}]
-  # p2                point positions in image 2. [points {x,y}]
+  # p1                point positions in image 1. [{x,y} points]
+  # p2                point positions in image 2. [{x,y} points]
   # F                 fundamental matrix. (3 x 3 matrix) (default = compute it)
   #
   # outputs ...................................................................
@@ -122,14 +177,13 @@ def get_epipolar_lines(p1, p2, F=None):
     F = get_fundamental_matrix(p1, p2)
 
   # append column of 1s to positions
-  n = p1.shape[0]
-  p1,p2 = np.matrix(np.copy(p1)), np.matrix(np.copy(p2))
-  p1 = np.matrix(np.hstack((p1[:,0],p1[:,1],np.ones((n,1)))))
-  p2 = np.matrix(np.hstack((p2[:,0],p2[:,1],np.ones((n,1)))))
+  n = p1.shape[1]
+  p1 = euc_to_hom(p1)
+  p2 = euc_to_hom(p2)
 
   # we assume the epipolar lines are not vertical (pretty safe assumption)
-  e1 = np.array(p2*F) # e = [a,b,c], where a*x+b*y+c = 0 <-> y = -a/b*x -c/b
-  e2 = np.array((F*p1.T).T) 
+  e1 = np.array(p2.T*F) # e = [a,b,c], where a*x+b*y+c = 0 <-> y = -a/b*x-c/b
+  e2 = np.array((F*p1).T) 
 
   # get epipolar lines
   m1,b1 = [-e1[:,0]/e1[:,1], -e1[:,2]/e1[:,1]]
@@ -159,7 +213,7 @@ def get_epipoles(F):
   ev,e2 = sp.linalg.eig(F.T)
   e2 = e2[:,np.argmin(np.abs(ev))]
   e2 /= e2[2]
-  return e1,e2
+  return np.real(e1), np.real(e2)
 
 # -----------------------------------------------------------------------------
 
@@ -174,106 +228,43 @@ def rectify_images(m1, p1, m2, p2):
   #
   # inputs ....................................................................
   # m1                image 1. [y x {rgb}]
-  # p1                points in image 1. [points {x,y}]
+  # p1                points in image 1. [{x,y} points]
   # m2                image 2. [y x {rgb}]
-  # p2                points in image 2. [points {x,y}]
+  # p2                points in image 2. [{x,y} points]
   # 
   # outputs ...................................................................
   # im1               rectified image 1. [y x {rgb}]
   # im2               rectified image 2. [y x {rgb}]
 
+  p1 = euc_to_hom(p1)
+  p2 = euc_to_hom(p2)
   F = get_fundamental_matrix(p1, p2)
   e1, e2 = get_epipoles(F)
 
-  # (see Hartley and Zisserman, multiple view geometry, ch 11 for details)
-
-  # first, rectify the second image ...........................................
-  # 1. translate image so center is at (0,0)
-  # 2. rotate image so epipole lies on x-axis
-  # 3. apply transformation so epipole maps to infinity
-
-  ny2,nx2,_ = m2.shape
-  T = np.matrix([[1,0,-nx2/2], [0,1,-ny2/2], [0,0,1]]) # translation matrix
-  ex,ey = e2[0]-nx2/2, e2[1]-ny2/2 # epipole location after translation
-  d = np.sqrt(ex*ex+ey*ey) # epipole distance from origin
+  # first, rectify image 2
+  ny, nx, _ = m2.shape
+  T = np.matrix([[1,0,-nx/2], [0,1,-ny/2], [0,0,1]]) # center image
+  ex, ey = e2[0]-nx/2, e2[1]-ny/2 # translated epipole
   a = -np.sign(ex)*np.arctan(ey/np.abs(ex))
-  # rotation matrix we need to apply to move epipole to x-axis
-  R = np.matrix([[np.cos(a),-np.sin(a),0], [np.sin(a),np.cos(a),0], [0,0,1]])
-  e2rot = R*T*np.matrix([ex,ey,1]).T # epipole location after translation
-  G = np.matrix([ [1,0,0], [0,1,0], [-1/e2rot[0],0,1] ]) # moves epipole to inf
-
-  H2 = sp.linalg.inv(T)*G*R*T # final transformation matrix for image 1
-  H2 /= H2[2,2]
-  c2 = np.array(H2).ravel()[:8] # http://effbot.org/imagingbook/image.htm
-
-  im2 = im.fromarray((m2*255).astype(np.uint8)) # scale from [0,1] to [0,255]
-  im2 = np.array(im2.transform((nx2,ny2), im.PERSPECTIVE, c2))
-
-  # then, rectify first image by minimizing distance between correspondences ..
-  ny1,nx1,_ = m1.shape
-  e1x = cross_prod_matx(e1)
-  M = e1x*F+np.matrix(e1).T*np.matrix([1,1,1])
-  H1 = H2*M
-  # H1 /= H1[2,2]
-  c1 = np.array(H1).ravel()[:8] # http://effbot.org/imagingbook/image.htm
-
-  print(c1)
-  print(c2)
-
-  im1 = im.fromarray((m1*255).astype(np.uint8)) # scale from [0,1] to [0,255]
-  im1 = np.array(im1.transform((nx1,ny1), im.PERSPECTIVE, c1))
-  pl.imshow(im1)
+  R = rotz(a) # rotation needed to move epipole to x-axis
+  ex = (R*np.matrix([ex,ey,1]).T)[0]
+  G = np.matrix([[1,0,0], [0,1,0], [-1/ex,0,1]]) # moves epipole to inf
+  H2 = G*R*T
+  
+  c = tform_coefs(sp.linalg.inv(T)*H2)
+  m2 = im.fromarray((m2*255).astype(np.uint8)) # scale from [0,1] to [0,255]
+  m2 = np.array(m2.transform((nx,ny), im.PERSPECTIVE, c))
+  pl.imshow(m2, origin='lower')
   pl.show()
 
-  # # first, transform image 1 so that epipolar lines are horizontal ............
-  # ex,ey = e1[0],e1[1] # location of epipole
-  #
-  # # translate image so image center is at center of rotation
-  # [ny,nx,_] = m1.shape
-  # T = np.matrix([[1,0,-nx/2], [0,1,-ny/2], [0,0,1]])
-  #
-  # # rotate image so epipole is at y = 0
-  # ex,ey = e1[0]-nx/2,e1[1]-ny/2
-  # d = np.sqrt(ex*ex+ey*ey)
-  # a = -np.sign(ex)*np.arctan(ey/np.abs(ex))
-  # R = np.matrix([[np.cos(a),-np.sin(a),0], [np.sin(a),np.cos(a),0], [0,0,1]])
-  #
-  # e = R*T*np.matrix([ex,ey,1]).T # new location of epipole
-  # G = np.matrix([ [1,0,0], [0,1,0], [-1/e[0],0,1] ]) # moves epipole to inf
-  #
-  # H2 = sp.linalg.inv(T)*G*R*T # final transformation matrix for image 1
-  # H2 /= H2[2,2]
-  # c = np.array(H2).ravel()[:8] # http://effbot.org/imagingbook/image.htm
-  #
-  # im1 = im.fromarray((m1*255).astype(np.uint8)) # scale from [0,1] to [0,255]
-  # im1 = np.array(im1.transform((nx,ny), im.PERSPECTIVE, c))
-  #
-  # # transform image 2 so correspondences align ................................
-  # v = np.matrix([1,1,1])
-  # M = cross_prod_matx(e2)*F+np.matrix(e2).T*v
-  #
-  # npts = p1.shape[0]
-  # p1h = np.matrix(np.hstack((p1,np.ones((npts,1))))).T
-  # p2h = np.matrix(np.hstack((p2,np.ones((npts,1))))).T
-  # ph1 = H2*M*p1h
-  #
-  # W = p1h.T
-  # b = p2h[0,:].T
-  # a = np.linalg.lstsq(W,b,None)[0]
-  # Ha = np.matrix([[a[0,0],a[1,0],a[2,0]], [0,1,0], [0,0,1]])
-  # H1 = Ha*H2*M
-  # print(Ha)
-  # print(H1)
-  # print(H2)
-  #
-  # c = np.array(H1).ravel()[:8] # http://effbot.org/imagingbook/image.htm
-  # im2 = im.fromarray((m2*255).astype(np.uint8)) # scale from [0,1] to [0,255]
-  # im2 = np.array(im2.transform((nx,ny), im.PERSPECTIVE, c))
-  #
-  # pl.imshow(im1)
-  # pl.show()
-  # pl.imshow(im2)
-  # pl.show()
+  # rectify image 1
+  e2cp = cross_prod_matx(e2)
+  M = e2cp*F+.0001*np.matrix(e2).T*np.matrix([1,1,1])
+  c = tform_coefs(sp.linalg.inv(T)*H2*M)
+  m1 = im.fromarray((m1*255).astype(np.uint8)) # scale from [0,1] to [0,255]
+  m1 = np.array(m1.transform((nx,ny), im.PERSPECTIVE, c))
+  pl.imshow(m1, origin='lower')
+  pl.show()
 
 # -----------------------------------------------------------------------------
 
