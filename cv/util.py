@@ -14,7 +14,7 @@ colors = {
   'orange'    : '#e24a33'
 }
 
-# same colors are above but transparent
+# same colors as above but transparent
 tcolors = {
   'blue'      : '#348abd80',
   'purple'    : '#7a68a680',
