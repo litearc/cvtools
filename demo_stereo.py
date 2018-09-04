@@ -16,15 +16,15 @@ path = 'im/epipolar/'
 # run epipolar geometry demo
 
 # load data
-# m1 = cv.util.imread(path+'1.jpg')
-# p1 = cv.util.get_labeled_pts(path+'1-points.png').T # [{x,y} points]
-# m2 = cv.util.imread(path+'2.jpg')
-# p2 = cv.util.get_labeled_pts(path+'2-points.png').T # [{x,y} points]
+m1 = cv.util.imread(path+'1.jpg')
+p1 = cv.util.get_labeled_pts(path+'1-points.png').T # [{x,y} points]
+m2 = cv.util.imread(path+'2.jpg')
+p2 = cv.util.get_labeled_pts(path+'2-points.png').T # [{x,y} points]
 
-m1 = cv.util.imread(path+'3.jpg')
-p1 = cv.util.get_labeled_pts(path+'3-points.png').T # [{x,y} points]
-m2 = cv.util.imread(path+'4.jpg')
-p2 = cv.util.get_labeled_pts(path+'4-points.png').T # [{x,y} points]
+# m1 = cv.util.imread(path+'3.jpg')
+# p1 = cv.util.get_labeled_pts(path+'3-points.png').T # [{x,y} points]
+# m2 = cv.util.imread(path+'4.jpg')
+# p2 = cv.util.get_labeled_pts(path+'4-points.png').T # [{x,y} points]
 
 # warp test
 cc = np.random.permutation(np.arange(p1.shape[1]))
@@ -36,16 +36,16 @@ pl.imshow(m2)
 pl.scatter(p2[0,:], p2[1,:], c=cc, marker='.')
 pl.show()
 
-tform = tf.PiecewiseAffineTransform()
-src, dst = np.array(p1.T), np.array(p2.T)
-# tform.estimate(src, dst)
-tform.estimate(dst, src)
-out = tf.warp(m1, tform)
-pl.imshow(out)
-pl.scatter(p2[0,:], p2[1,:], c=cc, marker='.')
-pl.show()
-
-sys.exit()
+# try piecewise affine transform
+# tform = tf.PiecewiseAffineTransform()
+# src, dst = np.array(p1.T), np.array(p2.T)
+# # tform.estimate(src, dst)
+# tform.estimate(dst, src)
+# out = tf.warp(m1, tform)
+# pl.imshow(out)
+# pl.scatter(p2[0,:], p2[1,:], c=cc, marker='.')
+# pl.show()
+# sys.exit()
 
 # get epipolar lines ..........................................................
 F = cv.stereo.get_fundamental_matrix(p1, p2)
@@ -107,5 +107,5 @@ pl.title('image 2 rectified', fontsize=8, weight='demibold')
 pl.show()
 
 # view morph ..................................................................
-cv.stereo.view_morph(m1, p1, m2, p2)
+# cv.stereo.view_morph(m1, p1, m2, p2)
 
