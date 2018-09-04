@@ -1,9 +1,11 @@
+from cv.util import colors, tcolors
 import matplotlib.pyplot as pl
 import numpy as np
 from PIL import Image as im
 import scipy as sp
 import skimage.transform as tf
 import pdb
+import wc
 
 # epipolar geometry -----------------------------------------------------------
 
@@ -225,9 +227,10 @@ def rectify_images(m1, p1, m2, p2):
   # rectifies two images so that the epipolar lines are horizontal, and
   # corresponding points in the images are found on the same horizontal line.
   #
+  # see: Hartley and Zisserman. "Multiple view geometery in computer vision".
   # based on the method described in the CS231A Computer Vision course notes.
   #
-  # im1, im2 = rectify_images(m1, p1, m2, p2)
+  # im1, im2, H1, H2 = rectify_images(m1, p1, m2, p2)
   #
   # inputs ....................................................................
   # m1                image 1. [y x {rgb}]
@@ -238,6 +241,8 @@ def rectify_images(m1, p1, m2, p2):
   # outputs ...................................................................
   # im1               rectified image 1. [y x {rgb}]
   # im2               rectified image 2. [y x {rgb}]
+  # H1                transformation matrix for image 1. (3 x 3 matrix)
+  # H2                transformation matrix for image 2. (3 x 3 matrix)
 
   p1 = euc_to_hom(p1)
   p2 = euc_to_hom(p2)
@@ -279,4 +284,44 @@ def rectify_images(m1, p1, m2, p2):
   return m1, m2, sp.linalg.inv(T)*HA*H2*M, sp.linalg.inv(T)*H2
 
 # -----------------------------------------------------------------------------
+
+def view_morph(m1, p1, m2, p2):
+
+  # performs a view morph of two input images and correspondences.
+  #
+  # inputs ....................................................................
+  # m1                image 1. [y x {rgb}]
+  # p1                points in image 1. [{x,y} points]
+  # m2                image 2. [y x {rgb}]
+  # p2                points in image 2. [{x,y} points]
+
+  cc = np.random.permutation(np.arange(p1.shape[1]))
+  pl.imshow(m1)
+  pl.scatter(p1[0,:], p1[1,:], c=cc, marker='.')
+  pl.show()
+  pl.imshow(m2)
+  pl.scatter(p2[0,:], p2[1,:], c=cc, marker='.')
+  pl.show()
+
+  # rectify images and correspondences
+  m1r, m2r, H1, H2 = rectify_images(m1, p1, m2, p2)
+  p1r = tform_pts(p1, H1)
+  p2r = tform_pts(p2, H2)
+
+  alpha = .3 # fraction the camera moves
+  src, dst = np.array(p1r.T), np.array(p2r.T)
+
+  # # ny,nx,_ = m1.shape
+  # # src = np.array(np.append(src, [[0,0],[0,nx-1],[ny-1,0],[nx-1,ny-1]], axis=0))
+  # # dst = np.array(np.append(dst, [[0,0],[0,nx-1],[ny-1,0],[nx-1,ny-1]], axis=0))
+  #
+  # # http://scikit-image.org/docs/dev/auto_examples/transform/plot_piecewise_affine.html
+
+  tform = tf.PiecewiseAffineTransform()
+  tform.estimate(src, dst)
+  out = tf.warp(m1r, tform)
+  pl.imshow(m1r)
+  pl.show()
+  pl.imshow(out)
+  pl.show()
 
